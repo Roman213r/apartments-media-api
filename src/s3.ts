@@ -12,6 +12,15 @@ import { imageKeyInUse } from './db.js';
 
 let client: S3Client | null = null;
 let resolvedRegion = env.awsRegion;
+const memoryObjects = new Map<string, Buffer>();
+
+function memoryStore(): Map<string, Buffer> | null {
+  return process.env.S3_DRIVER === 'memory' ? memoryObjects : null;
+}
+
+export function resetMemoryS3(): void {
+  memoryObjects.clear();
+}
 
 function buildClient(region: string): S3Client {
   return new S3Client({
@@ -60,6 +69,10 @@ export function explainS3Error(error: unknown): string {
 }
 
 export async function initS3(): Promise<void> {
+  if (memoryStore()) {
+    resolvedRegion = env.awsRegion;
+    return;
+  }
   let current = buildClient(env.awsRegion);
   try {
     await current.send(new ListObjectsV2Command({ Bucket: env.s3Bucket, MaxKeys: 1 }));
@@ -87,6 +100,11 @@ function s3(): S3Client {
 }
 
 export async function uploadWebp(key: string, body: Buffer): Promise<void> {
+  const memory = memoryStore();
+  if (memory) {
+    memory.set(key, Buffer.from(body));
+    return;
+  }
   await s3().send(
     new PutObjectCommand({
       Bucket: env.s3Bucket,
@@ -99,6 +117,8 @@ export async function uploadWebp(key: string, body: Buffer): Promise<void> {
 }
 
 export async function objectExists(key: string): Promise<boolean> {
+  const memory = memoryStore();
+  if (memory) return memory.has(key);
   try {
     await s3().send(new HeadObjectCommand({ Bucket: env.s3Bucket, Key: key }));
     return true;
@@ -109,6 +129,12 @@ export async function objectExists(key: string): Promise<boolean> {
 }
 
 export async function openObject(key: string): Promise<{ stream: Readable; contentLength?: number } | null> {
+  const memory = memoryStore();
+  if (memory) {
+    const body = memory.get(key);
+    if (!body) return null;
+    return { stream: Readable.from(body), contentLength: body.length };
+  }
   try {
     const result = await s3().send(new GetObjectCommand({ Bucket: env.s3Bucket, Key: key }));
     if (!result.Body) return null;
@@ -124,6 +150,11 @@ export async function openObject(key: string): Promise<{ stream: Readable; conte
 }
 
 export async function deleteObject(key: string): Promise<void> {
+  const memory = memoryStore();
+  if (memory) {
+    memory.delete(key);
+    return;
+  }
   await s3().send(new DeleteObjectCommand({ Bucket: env.s3Bucket, Key: key }));
 }
 
